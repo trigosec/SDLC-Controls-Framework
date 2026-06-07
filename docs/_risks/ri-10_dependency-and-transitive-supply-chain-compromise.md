@@ -48,3 +48,7 @@ Detection requires visibility into the full transitive dependency graph, not jus
 * **Costly and disruptive remediation** — Responding to a supply chain compromise requires identifying all affected artefacts across the estate, determining the scope of potential data exposure, rebuilding affected systems from known-good sources, and rotating any credentials that may have been exfiltrated.
 
 ## Links
+
+
+
+
