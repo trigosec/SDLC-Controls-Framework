@@ -1,4 +1,4 @@
-.PHONY: build run clean readiness data data-nist data-ffiec data-owasp data-eu-ai-act
+.PHONY: build run clean readiness phase-map phase-board data data-nist data-ffiec data-owasp data-eu-ai-act
 
 DOCKER_IMAGE := jekyll/jekyll
 CONTAINER_NAME := sdlc-controls-jekyll
@@ -23,6 +23,12 @@ clean: ## Remove the generated _site directory and Jekyll cache
 
 readiness: ## Check document readiness and write readiness-report.md
 	python3 scripts/readiness-check --report readiness-report.md
+
+phase-map: ## Regenerate phase-map.md (risk x SDLC-phase coverage table)
+	python3 scripts/generate-phase-map
+
+phase-board: ## Regenerate phase-board.html (kanban-style view of phase-map.md, for presenting)
+	python3 scripts/generate-phase-board
 
 data: data-nist data-owasp data-eu-ai-act ## Regenerate regulatory reference data files (excludes FFIEC and ISO 42001, see RUNBOOK)
 

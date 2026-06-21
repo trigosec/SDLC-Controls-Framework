@@ -61,6 +61,21 @@ This directory contains scripts for downloading external references, processing 
    - Requires: `pip install PyYAML`
    - Usage: `python readiness-check --report readiness-report.md`, `python readiness-check --files docs/_risks/ri-1_insider-threat.md`, `python readiness-check --update-checksums`, or `make readiness`
 
+## generate-phase-map
+   - Generates `phase-map.md`, a Markdown table with risks as rows and SDLC phases (Code, Build, Release, Runtime, Lifecycle) as columns; each cell lists the mitigation(s), via `mitigates` + `phase`, that address that risk at that phase.
+   - A blank row means a risk has no mitigation at any phase; an "Observations" section also flags risks covered at only one phase, both surfaced rather than guessed.
+   - Mitigations missing a `phase` are grouped into a trailing "No phase set" column instead of being silently dropped.
+   - A first attempt rendered mitigations as a Mermaid flowchart with phase lanes, but the auto-layout reordered subgraphs by edge connectivity rather than declared phase order — too noisy to read, dropped in favour of this plain table.
+   - Plain Markdown table, renders identically on GitHub, in a terminal, or in the Jekyll site — no diagram rendering engine required. Prototype only — not yet wired into the Jekyll site.
+   - Requires: `pip install PyYAML`
+   - Usage: `python generate-phase-map`, `python generate-phase-map --out path/to/file.md`, or `make phase-map`
+
+## generate-phase-board
+   - Generates `phase-board.html`, a self-contained kanban-style view of the same risk x phase data as `generate-phase-map`: each mitigation renders as a post-it card (id + title) in its (risk, phase) cell instead of as table text.
+   - Single HTML file with inline CSS and no external assets or network calls — open it directly in a browser, e.g. for presenting in a meeting.
+   - Requires: `pip install PyYAML`
+   - Usage: `python generate-phase-board`, `python generate-phase-board --out path/to/file.html`, or `make phase-board`
+
 ---
 
 ## Legacy Scripts

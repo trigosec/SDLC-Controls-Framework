@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""
+Risk x Phase Coverage Map for SDLC Controls Framework
+
+Generates a Markdown table showing, for each risk, which SDLC phase(s) have
+a mitigation in place and which mitigation(s) sit at each phase. Risks are
+rows, phases are columns (from docs/_config.yml phase_classification, in
+declared order), and a cell lists the mitigation ID(s) that both address the
+risk (via 'mitigates') and operate at that phase (via 'phase').
+
+This favours a flat table over a graph: with a small number of risks and
+phases the intersection is naturally dense, and a table has no auto-layout
+to fight (unlike a Mermaid flowchart, which reorders subgraphs by edge
+connectivity rather than declared phase order — tried first, dropped as too
+noisy to read).
+
+A risk with no mitigation at all renders as an entirely blank row, which is
+the most useful signal in the table — it means no SDLC phase currently
+addresses that risk. Mitigations with no 'phase' set are grouped into a
+trailing "No phase set" column instead of guessed, so that gap stays
+visible too (see scripts_docs/RUNBOOK.md).
+
+Input: docs/_risks/*.md front matter (sequence, title)
+       docs/_mitigations/*.md front matter (sequence, title, phase, mitigates)
+       docs/_config.yml (phase_classification, for column order/titles)
+Output: phase-map.md — a plain Markdown table, renders anywhere (GitHub,
+        terminal, Jekyll) without any diagram rendering engine.
+
+Usage:
+    ./scripts/generate-phase-map
+    ./scripts/generate-phase-map --out path/to/file.md
+
+Dependencies: PyYAML  (pip install pyyaml)
+"""
+
+import argparse
+from collections import defaultdict
+from pathlib import Path
+
+import yaml
+
+SCRIPT_DIR = Path(__file__).parent
+DOCS_DIR = SCRIPT_DIR.parent / "docs"
+RISKS_DIR = DOCS_DIR / "_risks"
+MITIGATIONS_DIR = DOCS_DIR / "_mitigations"
+CONFIG_FILE = DOCS_DIR / "_config.yml"
+DEFAULT_OUT = SCRIPT_DIR.parent / "phase-map.md"
+
+NO_PHASE = "NONE"
+NO_PHASE_TITLE = "No phase set"
+
+# Color swatches for quick visual scanning — plain Unicode emoji rather than
+# HTML/CSS, so the table renders identically on GitHub, in a terminal, and
+# in the Jekyll site.
+PHASE_EMOJI = {
+    "CODE": "🟦",
+    "BUILD": "🟨",
+    "RELEASE": "🟧",
+    "RUNTIME": "🟩",
+    "LIFECYCLE": "🟪",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--out",
+        metavar="PATH",
+        default=str(DEFAULT_OUT),
+        help=f"Output path for the generated Markdown file (default: {DEFAULT_OUT.name})",
+    )
+    return parser.parse_args()
+
+
+def parse_front_matter(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    return yaml.safe_load(text[3:end]) or {}
+
+
+def load_docs(directory: Path) -> list[dict]:
+    docs = []
+    for path in sorted(directory.glob("*.md")):
+        fm = parse_front_matter(path)
+        if "sequence" in fm and "title" in fm:
+            docs.append(fm)
+    return docs
+
+
+def load_phases() -> dict[str, str]:
+    config = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
+    return config.get("phase_classification", {})
+
+
+def risk_id(fm: dict) -> str:
+    return f"ri-{fm['sequence']}"
+
+
+def mitigation_id(fm: dict) -> str:
+    return f"mi-{fm['sequence']}"
+
+
+def build_cells(mitigations: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    """Map (risk_id, phase) -> mitigations that address that risk at that phase."""
+    cells: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for m in mitigations:
+        phase = m.get("phase") or NO_PHASE
+        for rid in m.get("mitigates") or []:
+            cells[(rid, phase)].append(m)
+    return cells
+
+
+def build_table(risks: list[dict], mitigations: list[dict], phases: dict[str, str],
+                cells: dict[tuple[str, str], list[dict]]) -> tuple[str, list[tuple[str, str]]]:
+    columns = list(phases.items())
+    if any(m.get("phase") is None for m in mitigations):
+        columns.append((NO_PHASE, NO_PHASE_TITLE))
+
+    header = "| Risk |" + "".join(f" {PHASE_EMOJI.get(code, '⬜')} {title} |" for code, title in columns)
+    separator = "|:-----|" + ":---:|" * len(columns)
+    lines = [header, separator]
+
+    for r in sorted(risks, key=lambda r: r["sequence"]):
+        rid = risk_id(r)
+        row = f"| **{rid}** {r['title']} |"
+        for code, _ in columns:
+            members = sorted(cells.get((rid, code), []), key=lambda m: m["sequence"])
+            row += " " + ", ".join(f"`{mitigation_id(m)}`" for m in members) + " |"
+        lines.append(row)
+
+    return "\n".join(lines), columns
+
+
+def build_observations(risks: list[dict], columns: list[tuple[str, str]],
+                        cells: dict[tuple[str, str], list[dict]]) -> list[str]:
+    notes = []
+    for r in sorted(risks, key=lambda r: r["sequence"]):
+        rid = risk_id(r)
+        covered = [title for code, title in columns if cells.get((rid, code))]
+        if not covered:
+            notes.append(f"- **{rid}** {r['title']}: no mitigation at any phase")
+        elif len(covered) == 1:
+            notes.append(f"- **{rid}** {r['title']}: covered at a single phase only ({covered[0]})")
+    return notes
+
+
+def write_output(table: str, observations: list[str], out_path: Path) -> None:
+    content = (
+        "# Risk x Phase Coverage Map\n\n"
+        "Auto-generated by `scripts/generate-phase-map` — do not edit by hand.\n"
+        "Rows are risks, columns are SDLC phases; a cell lists the mitigation(s) "
+        "that address that risk at that phase.\n\n"
+        f"{table}\n"
+    )
+    if observations:
+        content += "\n## Observations\n\n" + "\n".join(observations) + "\n"
+    out_path.write_text(content, encoding="utf-8")
+
+
+def main() -> None:
+    args = parse_args()
+    risks = load_docs(RISKS_DIR)
+    mitigations = load_docs(MITIGATIONS_DIR)
+    phases = load_phases()
+    cells = build_cells(mitigations)
+
+    table, columns = build_table(risks, mitigations, phases, cells)
+    observations = build_observations(risks, columns, cells)
+    write_output(table, observations, Path(args.out))
+
+    print(f"Phase map written to {args.out} ({len(risks)} risks, {len(mitigations)} mitigations, "
+          f"{len(columns)} columns)")
+    if observations:
+        print("\nObservations:")
+        for note in observations:
+            print(f"  {note}")
+
+
+if __name__ == "__main__":
+    main()

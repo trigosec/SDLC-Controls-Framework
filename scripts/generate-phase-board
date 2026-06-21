@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""
+Risk x Phase Coverage Board for SDLC Controls Framework
+
+Generates a standalone HTML page presenting the same data as
+scripts/generate-phase-map (risks x SDLC phases, cell = mitigations that
+address that risk at that phase), but as a kanban-style board: each
+mitigation renders as a post-it card (id + title) inside its (risk, phase)
+cell instead of as plain table text. Meant for showing in a meeting —
+single self-contained file, no build step, no network access, just open it
+in a browser.
+
+Input: docs/_risks/*.md front matter (sequence, title)
+       docs/_mitigations/*.md front matter (sequence, title, phase, mitigates)
+       docs/_config.yml (phase_classification, for column order/titles)
+Output: phase-board.html — self-contained (inline CSS, no external assets).
+
+Usage:
+    ./scripts/generate-phase-board
+    ./scripts/generate-phase-board --out path/to/file.html
+
+Dependencies: PyYAML  (pip install pyyaml)
+"""
+
+import argparse
+import html
+from collections import defaultdict
+from pathlib import Path
+
+import yaml
+
+SCRIPT_DIR = Path(__file__).parent
+DOCS_DIR = SCRIPT_DIR.parent / "docs"
+RISKS_DIR = DOCS_DIR / "_risks"
+MITIGATIONS_DIR = DOCS_DIR / "_mitigations"
+CONFIG_FILE = DOCS_DIR / "_config.yml"
+DEFAULT_OUT = SCRIPT_DIR.parent / "phase-board.html"
+
+NO_PHASE = "NONE"
+NO_PHASE_TITLE = "No phase set"
+
+# Post-it colors per phase, matching the emoji swatches used in
+# scripts/generate-phase-map (blue/yellow/orange/green/purple, red for
+# "no phase set").
+PHASE_COLORS = {
+    "CODE":      {"bg": "#cfe2ff", "border": "#3a6ea5"},
+    "BUILD":     {"bg": "#fff3b0", "border": "#a6862c"},
+    "RELEASE":   {"bg": "#ffe0b3", "border": "#b35900"},
+    "RUNTIME":   {"bg": "#cdf0d6", "border": "#2f7a45"},
+    "LIFECYCLE": {"bg": "#e3d6f5", "border": "#6c4593"},
+    NO_PHASE:    {"bg": "#f8d7da", "border": "#a82e3a"},
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--out",
+        metavar="PATH",
+        default=str(DEFAULT_OUT),
+        help=f"Output path for the generated HTML file (default: {DEFAULT_OUT.name})",
+    )
+    return parser.parse_args()
+
+
+def parse_front_matter(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    return yaml.safe_load(text[3:end]) or {}
+
+
+def load_docs(directory: Path) -> list[dict]:
+    docs = []
+    for path in sorted(directory.glob("*.md")):
+        fm = parse_front_matter(path)
+        if "sequence" in fm and "title" in fm:
+            docs.append(fm)
+    return docs
+
+
+def load_phases() -> dict[str, str]:
+    config = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
+    return config.get("phase_classification", {})
+
+
+def risk_id(fm: dict) -> str:
+    return f"ri-{fm['sequence']}"
+
+
+def mitigation_id(fm: dict) -> str:
+    return f"mi-{fm['sequence']}"
+
+
+def build_cells(mitigations: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    cells: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for m in mitigations:
+        phase = m.get("phase") or NO_PHASE
+        for rid in m.get("mitigates") or []:
+            cells[(rid, phase)].append(m)
+    return cells
+
+
+def esc(text: str) -> str:
+    return html.escape(str(text), quote=True)
+
+
+def render_card(m: dict, phase: str) -> str:
+    colors = PHASE_COLORS.get(phase, {"bg": "#eee", "border": "#888"})
+    return (
+        f'<div class="card" style="background:{colors["bg"]}; '
+        f'border-color:{colors["border"]};">'
+        f'<div class="card-id">{esc(mitigation_id(m))}</div>'
+        f'<div class="card-title">{esc(m["title"])}</div>'
+        f'</div>'
+    )
+
+
+def render_board(risks: list[dict], mitigations: list[dict], phases: dict[str, str],
+                 cells: dict[tuple[str, str], list[dict]]) -> str:
+    columns = list(phases.items())
+    if any(m.get("phase") is None for m in mitigations):
+        columns.append((NO_PHASE, NO_PHASE_TITLE))
+
+    header_cells = "".join(
+        f'<div class="col-header" style="border-color:{PHASE_COLORS.get(code, {}).get("border", "#888")};">{esc(title)}</div>'
+        for code, title in columns
+    )
+
+    rows_html = []
+    for r in sorted(risks, key=lambda r: r["sequence"]):
+        rid = risk_id(r)
+        row_cells = []
+        for code, _ in columns:
+            members = sorted(cells.get((rid, code), []), key=lambda m: m["sequence"])
+            cards = "".join(render_card(m, code) for m in members)
+            row_cells.append(f'<div class="cell">{cards}</div>')
+        rows_html.append(
+            f'<div class="row-label"><span class="risk-id">{esc(rid)}</span> {esc(r["title"])}</div>'
+            + "".join(row_cells)
+        )
+
+    grid_columns = f"220px repeat({len(columns)}, 1fr)"
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Risk x Phase Coverage Board</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 2rem;
+    background: #f4f5f7;
+    color: #222;
+  }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 0.25rem; }}
+  p.subtitle {{ color: #555; margin-top: 0; margin-bottom: 1.5rem; }}
+  .board {{
+    display: grid;
+    grid-template-columns: {grid_columns};
+    gap: 6px;
+    align-items: start;
+  }}
+  .col-header {{
+    font-weight: 600;
+    padding: 0.5rem;
+    text-align: center;
+    border-bottom: 3px solid #888;
+    background: #fff;
+    border-radius: 4px 4px 0 0;
+  }}
+  .row-label {{
+    font-weight: 600;
+    padding: 0.6rem;
+    background: #e9ecef;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    align-self: stretch;
+  }}
+  .row-label .risk-id {{
+    display: block;
+    font-size: 0.75rem;
+    color: #555;
+    font-weight: 700;
+  }}
+  .cell {{
+    min-height: 60px;
+    background: rgba(0,0,0,0.02);
+    border-radius: 4px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }}
+  .card {{
+    border: 1px solid;
+    border-radius: 3px;
+    padding: 6px 8px;
+    box-shadow: 1px 2px 3px rgba(0,0,0,0.15);
+    font-size: 0.78rem;
+    line-height: 1.25;
+  }}
+  .card-id {{
+    font-weight: 700;
+    font-size: 0.72rem;
+    margin-bottom: 2px;
+  }}
+  .card-title {{
+    color: #222;
+  }}
+</style>
+</head>
+<body>
+  <h1>Risk x Phase Coverage Board</h1>
+  <p class="subtitle">Rows are risks, columns are SDLC phases. Each post-it is a mitigation that addresses the row's risk at the column's phase. Generated by <code>scripts/generate-phase-board</code> — do not edit by hand.</p>
+  <div class="board">
+    <div></div>
+    {header_cells}
+    {"".join(rows_html)}
+  </div>
+</body>
+</html>
+"""
+
+
+def main() -> None:
+    args = parse_args()
+    risks = load_docs(RISKS_DIR)
+    mitigations = load_docs(MITIGATIONS_DIR)
+    phases = load_phases()
+    cells = build_cells(mitigations)
+
+    page = render_board(risks, mitigations, phases, cells)
+    Path(args.out).write_text(page, encoding="utf-8")
+
+    print(f"Phase board written to {args.out} ({len(risks)} risks, {len(mitigations)} mitigations)")
+
+
+if __name__ == "__main__":
+    main()
